@@ -388,32 +388,78 @@ const DatabaseManager = {
         `);
     },
 
-    executeQuery(sql) {
-        const trimmed = sql.trim().replace(/;+$/, '').trim();
-        const upper = trimmed.toUpperCase();
+    _stripStrings(sql) {
+        return sql.replace(/'[^']*'/g, "''").replace(/"[^"]*"/g, '""');
+    },
 
-        const forbidden = [
-            'INSERT', 'UPDATE', 'DELETE', 'DROP', 'CREATE', 'ALTER',
-            'ATTACH', 'DETACH', 'PRAGMA', 'VACUUM', 'REINDEX',
-            'GRANT', 'REVOKE', 'BEGIN', 'COMMIT', 'ROLLBACK',
-            'SAVEPOINT', 'RELEASE'
+    _isReadOnly(sql) {
+        const stripped = this._stripStrings(sql);
+        const upper = stripped.toUpperCase();
+
+        const dmlKeywords = [
+            'INSERT', 'UPDATE', 'DELETE', 'REPLACE', 'UPSERT'
+        ];
+        const ddlKeywords = [
+            'DROP', 'CREATE', 'ALTER', 'ATTACH', 'DETACH',
+            'PRAGMA', 'VACUUM', 'REINDEX', 'GRANT', 'REVOKE',
+            'BEGIN', 'COMMIT', 'ROLLBACK', 'SAVEPOINT', 'RELEASE'
         ];
 
-        const firstWord = upper.split(/\s+/)[0];
-        if (firstWord !== 'SELECT' && firstWord !== 'WITH' && firstWord !== 'EXPLAIN') {
-            const matched = forbidden.find(f => upper.startsWith(f));
-            if (matched) {
-                throw new Error(`安全限制：不允许执行 ${matched} 操作。\n本游戏只允许使用 SELECT 查询来调查案件。`);
+        const allForbidden = [...dmlKeywords, ...ddlKeywords];
+        for (const kw of allForbidden) {
+            const regex = new RegExp(`\\b${kw}\\b`);
+            if (regex.test(upper)) {
+                return { safe: false, keyword: kw };
             }
-            throw new Error(`不支持的操作：${firstWord}\n请使用 SELECT 语句查询数据。`);
+        }
+        return { safe: true };
+    },
+
+    executeQuery(sql) {
+        const trimmed = sql.trim().replace(/;+$/, '').trim();
+
+        if (!trimmed) {
+            throw new Error('请输入SQL查询语句。');
         }
 
-        if (upper.includes(';') && upper.split(';').filter(s => s.trim()).length > 1) {
-            throw new Error('安全限制：不允许执行多条语句。\n请每次只执行一条 SELECT 查询。');
+        if (trimmed.includes(';')) {
+            const parts = trimmed.split(';').filter(s => s.trim());
+            if (parts.length > 1) {
+                throw new Error('安全限制：不允许执行多条语句。\n请每次只执行一条 SELECT 查询。');
+            }
+        }
+
+        const upper = this._stripStrings(trimmed).toUpperCase().trim();
+        const firstWord = upper.split(/\s+/)[0];
+        if (firstWord !== 'SELECT' && firstWord !== 'WITH' && firstWord !== 'EXPLAIN') {
+            throw new Error(`安全限制：不允许执行 ${firstWord} 操作。\n本游戏只允许使用 SELECT 查询来调查案件。`);
+        }
+
+        const readCheck = this._isReadOnly(trimmed);
+        if (!readCheck.safe) {
+            throw new Error(`安全限制：不允许执行 ${readCheck.keyword} 操作。\n本游戏只允许使用 SELECT 查询来调查案件。`);
+        }
+
+        if (firstWord === 'WITH') {
+            const strippedUpper = upper;
+            const afterCTE = strippedUpper.replace(/WITH\s+.+?\)\s*/gs, '');
+            const cteBody = strippedUpper.split(/\)\s*(?=SELECT\b|INSERT\b|UPDATE\b|DELETE\b)/);
+            const lastPart = cteBody[cteBody.length - 1].trim();
+            const mainOp = lastPart.split(/\s+/)[0];
+            if (mainOp && mainOp !== 'SELECT' && mainOp !== '') {
+                throw new Error(`安全限制：WITH 子句只能配合 SELECT 使用。\n检测到不允许的操作: ${mainOp}`);
+            }
         }
 
         try {
+            const changesBefore = this.db.getRowsModified();
             const results = this.db.exec(trimmed);
+            const changesAfter = this.db.getRowsModified();
+
+            if (changesAfter !== changesBefore) {
+                throw new Error('安全限制：该语句试图修改数据，已被阻止。');
+            }
+
             if (results.length === 0) {
                 return { columns: [], values: [], rowCount: 0 };
             }
@@ -423,6 +469,9 @@ const DatabaseManager = {
                 rowCount: results[0].values.length
             };
         } catch (e) {
+            if (e.message.includes('安全限制')) {
+                throw e;
+            }
             let msg = e.message;
             let help = '';
 

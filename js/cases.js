@@ -145,9 +145,26 @@ const CaseManager = {
         const sqlUpper = sql.toUpperCase();
         const resultStr = JSON.stringify(queryResult.values).toLowerCase();
 
+        const killerIds = { case1: '4', case2: '10', case3: '16' };
+        const killerId = killerIds[caseId];
+        const killerName = caseData.killer.toLowerCase();
+
+        const sqlTargetsKiller =
+            sql.includes(killerId) && (
+                sqlUpper.includes('PERSON_ID') ||
+                sqlUpper.includes('RELATED_PERSON') ||
+                sqlUpper.includes('SENDER_ID') ||
+                sqlUpper.includes('RECEIVER_ID') ||
+                sqlUpper.includes('ID')
+            ) ||
+            sql.toLowerCase().includes(killerName);
+
+        if (!sqlTargetsKiller) {
+            return 0;
+        }
+
         for (const chain of caseData.evidenceChain) {
-            const tableMentioned = sqlUpper.includes(chain.table.toUpperCase());
-            let conditionHints = chain.condition.toLowerCase().split(/AND|OR/).map(s => s.trim());
+            let conditionHints = chain.condition.toLowerCase().split(/\s+and\s+/).map(s => s.trim());
 
             let conditionMatched = false;
             for (const hint of conditionHints) {
@@ -156,17 +173,14 @@ const CaseManager = {
                     conditionMatched = true;
                     break;
                 }
-                const eqMatch = hint.match(/(\w+)\s*=\s*(\d+)/);
-                if (eqMatch) {
-                    const personId = eqMatch[2];
-                    if (sqlUpper.includes(eqMatch[1].toUpperCase()) || resultStr.includes(personId)) {
-                        conditionMatched = true;
-                        break;
-                    }
+                const eqMatch = hint.match(/person_id\s*=\s*(\d+)/);
+                if (eqMatch && eqMatch[1] === killerId && sql.includes(killerId)) {
+                    conditionMatched = true;
+                    break;
                 }
             }
 
-            if (tableMentioned || conditionMatched) {
+            if (conditionMatched) {
                 points++;
             }
         }
