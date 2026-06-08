@@ -56,7 +56,7 @@
 
         const recordCount = DatabaseManager.getRecordCount();
         assert(recordCount >= 80, `记录总数 ≥ 80 (实际: ${recordCount})`);
-        assert(recordCount <= 300, `记录总数 ≤ 300 (实际: ${recordCount})`);
+        assert(recordCount <= 150, `记录总数 ≤ 150 (实际: ${recordCount})`);
 
         // === Security - Basic ===
         suite('安全性 - 基础阻止');
@@ -176,6 +176,25 @@
 
         let rInv = CaseManager.verifyAnswer('case999', '某人', '', '');
         assert(!rInv.success, '无效案件不通过');
+
+        // === Personal info not evidence ===
+        suite('答案验证 - 凶手个人信息不算证据');
+
+        let rP1 = CaseManager.verifyAnswer('case1', '林美玲',
+            "SELECT * FROM persons WHERE id = 4", '遗产');
+        assert(!rP1.evidenceValid, '查凶手个人资料不通过');
+
+        let rP2 = CaseManager.verifyAnswer('case3', '钱进',
+            "SELECT * FROM persons WHERE id = 16", '赌债');
+        assert(!rP2.evidenceValid, '查凶手persons不通过');
+
+        let rComm = CaseManager.verifyAnswer('case1', '林美玲',
+            "SELECT * FROM communications WHERE sender_id = 4 AND comm_time LIKE '2024-03-14%'", '遗产');
+        assert(!rComm.evidenceValid, '凶手普通通讯不通过');
+
+        let rAlibi = CaseManager.verifyAnswer('case3', '钱进',
+            "SELECT * FROM alibis WHERE person_id = 16", '赌博');
+        assert(!rAlibi.evidenceValid, '凶手alibi不算证据');
 
         // === Data quality ===
         suite('数据完整性');

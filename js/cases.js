@@ -142,24 +142,40 @@ const CaseManager = {
     _evaluateEvidence(caseId, sql, queryResult) {
         const caseData = this.cases[caseId];
         let points = 0;
-        const sqlUpper = sql.toUpperCase();
         const resultStr = JSON.stringify(queryResult.values).toLowerCase();
+        const sqlLower = sql.toLowerCase();
 
         const killerIds = { case1: '4', case2: '10', case3: '16' };
         const killerId = killerIds[caseId];
         const killerName = caseData.killer.toLowerCase();
 
-        const sqlTargetsKiller =
-            sql.includes(killerId) && (
-                sqlUpper.includes('PERSON_ID') ||
-                sqlUpper.includes('RELATED_PERSON') ||
-                sqlUpper.includes('SENDER_ID') ||
-                sqlUpper.includes('RECEIVER_ID') ||
-                sqlUpper.includes('ID')
-            ) ||
-            sql.toLowerCase().includes(killerName);
+        const sqlTargetsKiller = sqlLower.includes(killerName) ||
+            (sql.includes(killerId) && /person_id|related_person|sender_id|receiver_id/i.test(sql));
 
-        if (!sqlTargetsKiller) {
+        const sqlIsTargeted = sqlTargetsKiller ||
+            /description\s+(LIKE|like)\s+'%/i.test(sql);
+
+        if (!sqlIsTargeted) {
+            return 0;
+        }
+
+        const requiredKeywords = {
+            case1: ['氰化', '厨房', '茶', '遗嘱', '自有办法'],
+            case2: ['农药', '指纹', '周小燕', '少管闲事', '挪用'],
+            case3: ['氯化钾', '赌博', '病房', '药房', '钱进']
+        };
+
+        const keywords = requiredKeywords[caseId];
+        if (!keywords) return 0;
+
+        let keywordHits = 0;
+        for (const kw of keywords) {
+            if (resultStr.includes(kw.toLowerCase())) {
+                keywordHits++;
+            }
+        }
+
+        if (keywordHits < 1) {
             return 0;
         }
 
@@ -168,15 +184,14 @@ const CaseManager = {
 
             let conditionMatched = false;
             for (const hint of conditionHints) {
-                const likeMatch = hint.match(/like\s+'%(.+)%'/);
-                if (likeMatch && resultStr.includes(likeMatch[1].toLowerCase())) {
-                    conditionMatched = true;
-                    break;
-                }
-                const eqMatch = hint.match(/person_id\s*=\s*(\d+)/);
-                if (eqMatch && eqMatch[1] === killerId && sql.includes(killerId)) {
-                    conditionMatched = true;
-                    break;
+                const likeMatch = hint.match(/like\s+'%([^']+)%'/);
+                if (likeMatch) {
+                    const segments = likeMatch[1].split('%').filter(s => s.length > 0);
+                    const allSegmentsMatch = segments.every(seg => resultStr.includes(seg.toLowerCase()));
+                    if (allSegmentsMatch && segments.length > 0) {
+                        conditionMatched = true;
+                        break;
+                    }
                 }
             }
 

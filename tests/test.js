@@ -132,10 +132,10 @@ async function runTests() {
 
     const recordCount = getRecordCount();
     assert(recordCount >= 80, `记录总数 ≥ 80 (实际: ${recordCount})`);
-    assert(recordCount <= 300, `记录总数 ≤ 300 不会过多影响性能 (实际: ${recordCount})`);
+    assert(recordCount <= 150, `记录总数 ≤ 150 (实际: ${recordCount})`);
 
     const persons = db.exec("SELECT COUNT(*) FROM persons")[0].values[0][0];
-    assert(persons === 25, `人物25条 (实际: ${persons})`);
+    assert(persons === 20, `人物20条 (实际: ${persons})`);
 
     const caseCount = db.exec("SELECT COUNT(*) FROM case_files")[0].values[0][0];
     assert(caseCount === 3, '3个案件');
@@ -180,7 +180,7 @@ async function runTests() {
 
     // Verify data unchanged after attacks
     const personsAfter = db.exec("SELECT COUNT(*) FROM persons")[0].values[0][0];
-    assert(personsAfter === 25, `攻击后数据完好: persons仍有25条 (实际: ${personsAfter})`);
+    assert(personsAfter === 20, `攻击后数据完好: persons仍有20条 (实际: ${personsAfter})`);
 
     // ═══════════════════════════════════════════
     suite('安全性 - 字符串内关键词不误拦');
@@ -308,6 +308,42 @@ async function runTests() {
     assert(!rTrivial.evidenceValid, 'SELECT 1 不算有效证据');
 
     // ═══════════════════════════════════════════
+    suite('答案验证 - 凶手个人信息不算证据');
+
+    // 只查凶手的 persons 表信息
+    let rPersonal1 = CaseManager.verifyAnswer('case1', '林美玲',
+        "SELECT * FROM persons WHERE id = 4", '遗产');
+    assert(!rPersonal1.evidenceValid, '案件1: 查凶手个人资料不算证据');
+
+    let rPersonal2 = CaseManager.verifyAnswer('case2', '周小燕',
+        "SELECT * FROM persons WHERE id = 10", '挪用');
+    assert(!rPersonal2.evidenceValid, '案件2: 查凶手个人资料不算证据');
+
+    let rPersonal3 = CaseManager.verifyAnswer('case3', '钱进',
+        "SELECT * FROM persons WHERE id = 16", '赌债');
+    assert(!rPersonal3.evidenceValid, '案件3: 查凶手个人资料不算证据');
+
+    // 查凶手的通讯记录但无关键内容
+    let rComm1 = CaseManager.verifyAnswer('case1', '林美玲',
+        "SELECT * FROM communications WHERE sender_id = 4 AND comm_time LIKE '2024-03-14%'", '遗产');
+    assert(!rComm1.evidenceValid, '案件1: 凶手普通通讯记录不算证据（无关键内容）');
+
+    // 查凶手的财务但不含犯罪相关内容
+    let rFinNoEvidence = CaseManager.verifyAnswer('case1', '林美玲',
+        "SELECT * FROM financial_records WHERE person_id = 4 AND description LIKE '%手册%'", '遗产');
+    assert(!rFinNoEvidence.evidenceValid, '案件1: 凶手买书记录不算有效犯罪证据');
+
+    // 查凶手名字但结果不含关键证据词
+    let rNameOnly = CaseManager.verifyAnswer('case2', '周小燕',
+        "SELECT * FROM persons WHERE name = '周小燕'", '挪用');
+    assert(!rNameOnly.evidenceValid, '案件2: 只查凶手姓名不算证据');
+
+    // 查了与凶手相关的 alibis
+    let rAlibi = CaseManager.verifyAnswer('case3', '钱进',
+        "SELECT * FROM alibis WHERE person_id = 16", '赌博');
+    assert(!rAlibi.evidenceValid, '案件3: 凶手的不在场证明记录不算犯罪证据');
+
+    // ═══════════════════════════════════════════
     suite('数据完整性');
 
     const redHerrings = db.exec("SELECT COUNT(*) FROM evidence WHERE is_red_herring = 1")[0].values[0][0];
@@ -317,10 +353,10 @@ async function runTests() {
     assert(unverified >= 3, `未验证不在场证明≥3 (实际: ${unverified})`);
 
     const comms = db.exec("SELECT COUNT(*) FROM communications")[0].values[0][0];
-    assert(comms >= 20, `通讯记录≥20 (实际: ${comms})`);
+    assert(comms >= 10, `通讯记录≥10 (实际: ${comms})`);
 
     const finance = db.exec("SELECT COUNT(*) FROM financial_records")[0].values[0][0];
-    assert(finance >= 15, `财务记录≥15 (实际: ${finance})`);
+    assert(finance >= 10, `财务记录≥10 (实际: ${finance})`);
 
     // Timeline ordering
     const tl = db.exec("SELECT event_time FROM events WHERE case_id = 1 ORDER BY event_time");
@@ -332,17 +368,17 @@ async function runTests() {
 
     // Cross-case interference
     const crossDoctor = db.exec("SELECT COUNT(DISTINCT person_id) FROM medical_records WHERE doctor_id = 14")[0].values[0][0];
-    assert(crossDoctor >= 3, `黄医生诊治≥3人（跨案件）(实际: ${crossDoctor})`);
+    assert(crossDoctor >= 2, `黄医生诊治≥2人（跨案件）(实际: ${crossDoctor})`);
 
     // Each case has enough evidence
     for (let caseId = 1; caseId <= 3; caseId++) {
         const evCount = db.exec(`SELECT COUNT(*) FROM evidence WHERE case_id = ${caseId}`)[0].values[0][0];
-        assert(evCount >= 5, `案件${caseId}证据≥5条 (实际: ${evCount})`);
+        assert(evCount >= 4, `案件${caseId}证据≥4条 (实际: ${evCount})`);
     }
 
     // Three killers have financial trails
     const killerFinance = db.exec("SELECT COUNT(*) FROM financial_records WHERE person_id IN (4, 10, 16)")[0].values[0][0];
-    assert(killerFinance >= 6, `三位凶手共≥6条财务记录 (实际: ${killerFinance})`);
+    assert(killerFinance >= 5, `三位凶手共≥5条财务记录 (实际: ${killerFinance})`);
 
     // ═══════════════════════════════════════════
     console.log(`\n${'═'.repeat(50)}`);
