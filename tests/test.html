@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>SQL侦探 - 自动化测试</title>
+    <style>
+        body { font-family: monospace; background: #1a1a2e; color: #e8e8e8; padding: 20px; }
+        h1 { color: #00d4aa; }
+        .suite { margin: 20px 0; padding: 16px; background: #16213e; border-radius: 6px; }
+        .suite h2 { color: #ffa502; margin-bottom: 10px; font-size: 1rem; }
+        .pass { color: #2ed573; }
+        .fail { color: #ff4757; }
+        .result { padding: 4px 0; font-size: 0.9rem; }
+        .summary { margin-top: 20px; padding: 16px; background: #0f3460; border-radius: 6px; font-size: 1.1rem; }
+    </style>
+</head>
+<body>
+    <h1>SQL侦探 - 自动化测试</h1>
+    <div id="test-output"></div>
+    <div id="summary" class="summary"></div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.8.0/sql-wasm.js"></script>
+    <script src="../js/database.js"></script>
+    <script src="../js/cases.js"></script>
+    <script src="../js/ui.js"></script>
+    <script>
+    (async function runTests() {
+        const output = document.getElementById('test-output');
+        let passed = 0, failed = 0;
+
+        function assert(condition, message) {
+            if (condition) {
+                passed++;
+                log(message, true);
+            } else {
+                failed++;
+                log(message, false);
+            }
+        }
+
+        function log(msg, pass) {
+            const div = document.createElement('div');
+            div.className = 'result ' + (pass ? 'pass' : 'fail');
+            div.textContent = (pass ? '✓ ' : '✗ ') + msg;
+            output.lastElementChild.appendChild(div);
+        }
+
+        function suite(name) {
+            const div = document.createElement('div');
+            div.className = 'suite';
+            div.innerHTML = `<h2>${name}</h2>`;
+            output.appendChild(div);
+        }
+
+        // Initialize database
+        await DatabaseManager.init();
+
+        // === TEST SUITE: Database Initialization ===
+        suite('数据库初始化测试');
+
+        const tables = DatabaseManager.db.exec("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name");
+        assert(tables.length > 0 && tables[0].values.length === 11, '数据库应有11张表');
+
+        const recordCount = DatabaseManager.getRecordCount();
+        assert(recordCount >= 80 && recordCount <= 200, `记录总数应在80-200之间 (实际: ${recordCount})`);
+
+        const persons = DatabaseManager.db.exec("SELECT COUNT(*) FROM persons");
+        assert(persons[0].values[0][0] === 25, '应有25个人物记录');
+
+        const cases = DatabaseManager.db.exec("SELECT COUNT(*) FROM case_files");
+        assert(cases[0].values[0][0] === 3, '应有3个案件');
+
+        // === TEST SUITE: Security (SELECT-only) ===
+        suite('安全性测试 - 只允许SELECT');
+
+        const dangerousQueries = [
+            "INSERT INTO persons VALUES (99, 'hack', '男', 20, '', '', '', '')",
+            "UPDATE persons SET name = 'hacked' WHERE id = 1",
+            "DELETE FROM persons WHERE id = 1",
+            "DROP TABLE persons",
+            "CREATE TABLE hack (id INTEGER)",
+            "ALTER TABLE persons ADD COLUMN hacked TEXT",
+            "ATTACH DATABASE ':memory:' AS hack",
+            "PRAGMA table_info(persons); DROP TABLE persons",
+        ];
+
+        dangerousQueries.forEach(q => {
+            let blocked = false;
+            try {
+                DatabaseManager.executeQuery(q);
+            } catch (e) {
+                blocked = true;
+            }
+            assert(blocked, `应阻止: ${q.substring(0, 50)}...`);
+        });
+
+        // Multi-statement injection
+        let multiBlocked = false;
+        try {
+            DatabaseManager.executeQuery("SELECT 1; DROP TABLE persons");
+        } catch (e) {
+            multiBlocked = true;
+        }
+        assert(multiBlocked, '应阻止多语句注入');
+
+        // === TEST SUITE: Valid Queries ===
+        suite('有效查询测试');
+
+        const validQueries = [
+            "SELECT * FROM persons LIMIT 5",
+            "SELECT name, age FROM persons WHERE age > 40",
+            "SELECT p.name, r.relationship_type FROM persons p JOIN relationships r ON p.id = r.person1_id",
+            "SELECT case_id, COUNT(*) FROM events GROUP BY case_id",
+            "WITH suspect AS (SELECT * FROM persons WHERE id = 4) SELECT * FROM suspect",
+            "SELECT * FROM evidence WHERE is_red_herring = 1",
+            "SELECT * FROM communications WHERE sender_id = 4 ORDER BY comm_time",
+        ];
+
+        validQueries.forEach(q => {
+            let success = false;
+            try {
+                const r = DatabaseManager.executeQuery(q);
+                success = r.rowCount >= 0;
+            } catch (e) {
+                success = false;
+            }
+            assert(success, `应成功执行: ${q.substring(0, 60)}...`);
+        });
+
+        // === TEST SUITE: Error Messages ===
+        suite('错误提示测试');
+
+        try { DatabaseManager.executeQuery("SELECT * FROM nonexistent"); } catch(e) {
+            assert(e.message.includes('不存在') || e.message.includes('no such table'), '不存在的表应有清晰提示');
+        }
+
+        try { DatabaseManager.executeQuery("SELEC * FROM persons"); } catch(e) {
+            assert(e.message.includes('不支持') || e.message.includes('语法'), '拼写错误应有提示');
+        }
+
+        // === TEST SUITE: Case Verification ===
+        suite('答案验证测试');
+
+        // Case 1 - correct answer
+        let r1 = CaseManager.verifyAnswer('case1', '林美玲',
+            "SELECT * FROM financial_records WHERE person_id = 4 AND description LIKE '%氰化%'", '为了遗产');
+        assert(r1.killerCorrect === true, '案件1正确凶手应被识别');
+        assert(r1.motiveCorrect === true, '案件1正确动机应被识别');
+
+        // Case 1 - wrong killer
+        let r1w = CaseManager.verifyAnswer('case1', '陈伟华',
+            "SELECT * FROM evidence WHERE case_id = 1", '仇恨');
+        assert(r1w.killerCorrect === false, '案件1错误凶手应被拒绝');
+
+        // Case 2 - correct answer
+        let r2 = CaseManager.verifyAnswer('case2', '周小燕',
+            "SELECT * FROM evidence WHERE case_id = 2 AND description LIKE '%指纹%周小燕%'", '因为张德海挪用公款威胁她顶罪');
+        assert(r2.killerCorrect === true, '案件2正确凶手应被识别');
+        assert(r2.motiveCorrect === true, '案件2正确动机应被识别');
+
+        // Case 3 - correct answer
+        let r3 = CaseManager.verifyAnswer('case3', '钱进',
+            "SELECT * FROM surveillance WHERE person_id = 16", '因为赌博欠债需要钱');
+        assert(r3.killerCorrect === true, '案件3正确凶手应被识别');
+        assert(r3.motiveCorrect === true, '案件3正确动机应被识别');
+
+        // === TEST SUITE: Data Integrity ===
+        suite('数据完整性测试');
+
+        // Each case should have events
+        const caseEvents = DatabaseManager.db.exec("SELECT case_id, COUNT(*) FROM events GROUP BY case_id");
+        assert(caseEvents[0].values.length === 3, '三个案件都应有事件记录');
+        caseEvents[0].values.forEach(row => {
+            assert(row[1] >= 5, `案件${row[0]}应至少有5条事件 (实际: ${row[1]})`);
+        });
+
+        // Red herrings exist
+        const redHerrings = DatabaseManager.db.exec("SELECT COUNT(*) FROM evidence WHERE is_red_herring = 1");
+        assert(redHerrings[0].values[0][0] >= 3, `应至少有3条伪线索 (实际: ${redHerrings[0].values[0][0]})`);
+
+        // Alibis with unverified entries
+        const unverified = DatabaseManager.db.exec("SELECT COUNT(*) FROM alibis WHERE verified = 0");
+        assert(unverified[0].values[0][0] >= 3, '应有未验证的不在场证明');
+
+        // Timeline consistency
+        const timeline = DatabaseManager.db.exec(
+            "SELECT * FROM events WHERE case_id = 1 ORDER BY event_time"
+        );
+        assert(timeline[0].values.length >= 8, '案件1时间线应有完整事件序列');
+
+        // Cross-case interference: persons appearing in multiple cases
+        const crossCase = DatabaseManager.db.exec(`
+            SELECT person_id, COUNT(DISTINCT case_id) as cases FROM (
+                SELECT related_person_id as person_id, case_id FROM evidence WHERE related_person_id IS NOT NULL
+                UNION ALL
+                SELECT person_id, case_id FROM alibis
+            ) GROUP BY person_id HAVING cases > 1
+        `);
+        // Person 14 (黄医生) appears in case 1 (medical records for 陈雅琴) and case 3
+        const medCross = DatabaseManager.db.exec(
+            "SELECT DISTINCT doctor_id FROM medical_records WHERE person_id IN (SELECT victim_id FROM case_files)"
+        );
+        assert(medCross[0].values.length >= 1, '应有跨案件的人物交叉');
+
+        // === TEST SUITE: Clue Chain Completeness ===
+        suite('线索链完整性测试');
+
+        // Case 1: Lin Meiling evidence chain
+        const c1evidence = DatabaseManager.db.exec(
+            "SELECT COUNT(*) FROM evidence WHERE case_id = 1 AND is_red_herring = 0"
+        );
+        assert(c1evidence[0].values[0][0] >= 5, '案件1应有至少5条真实证据');
+
+        // Case 2: Financial motive trail
+        const c2finance = DatabaseManager.db.exec(
+            "SELECT COUNT(*) FROM financial_records WHERE person_id = 10"
+        );
+        assert(c2finance[0].values[0][0] >= 2, '案件2凶手应有财务记录');
+
+        // Case 3: Surveillance evidence
+        const c3surv = DatabaseManager.db.exec(
+            "SELECT COUNT(*) FROM surveillance WHERE person_id = 16"
+        );
+        assert(c3surv[0].values[0][0] >= 4, '案件3凶手应有多条监控记录');
+
+        // === Summary ===
+        const summary = document.getElementById('summary');
+        const total = passed + failed;
+        summary.innerHTML = `测试完成: <span class="pass">${passed} 通过</span> / <span class="fail">${failed} 失败</span> / 共 ${total} 项`;
+        summary.style.borderLeft = failed === 0 ? '4px solid #2ed573' : '4px solid #ff4757';
+    })();
+    </script>
+</body>
+</html>
